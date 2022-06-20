@@ -7,19 +7,21 @@
 
 MFRC522 mfrc522(SS_PIN, RST_PIN); // Create MFRC522 instance.
 
-byte buffer[18];
-byte block;
+
+// buffer for outgoing data
+byte g_buffer_tx[20];
+
+// buffer for incomming command
+byte g_buffer_rx[20];
+// count of bytes already received
+byte g_buffer_rx_count = 0;
+// if cmd fully received?
+bool g_buffer_rx_cmd_received = false;
+
 MFRC522::StatusCode status;
 
 // default (hardcoded) key
 MFRC522::MIFARE_Key key = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
-
-// UID to write size
-byte g_uid_size;
-// UID to write
-byte g_uid[10];
-
-
 
 enum Command
 {
@@ -76,8 +78,8 @@ bool try_dump_with_key(MFRC522::MIFARE_Key *key)
     }
 
     // Read block
-    byte byteCount = sizeof(buffer);
-    status = mfrc522.MIFARE_Read(block, buffer, &byteCount);
+    byte byteCount = sizeof(g_buffer_tx);
+    status = mfrc522.MIFARE_Read(block, g_buffer_tx, &byteCount);
     if (status != MFRC522::STATUS_OK)
     {
       return false;
@@ -88,7 +90,7 @@ bool try_dump_with_key(MFRC522::MIFARE_Key *key)
       result = true;
       // Dump block data
       Serial.printf("3 B%02d:", block);
-      dump_byte_array(buffer, 16);
+      dump_byte_array(g_buffer_tx, 16);
       Serial.println();
     }
   }
@@ -134,7 +136,6 @@ void uid_write()
 
 
   mfrc522.PICC_HaltA();
-  g_uid_size = 0;
   g_cmd = Command::IDLE;
 
 }
@@ -178,6 +179,35 @@ void card_write()
   if (!mfrc522.PICC_ReadCardSerial())
     return;
 
+  MFRC522::StatusCode status;
+
+  status = mfrc522.PCD_Authenticate(MFRC522::PICC_CMD_MF_AUTH_KEY_A, g_buffer_rx[1], &key, &(mfrc522.uid));
+  if (status != MFRC522::STATUS_OK)
+  {
+    // Serial.print(F("PCD_Authenticate() failed: "));
+    // Serial.println(mfrc522.GetStatusCodeName(status));
+    Serial.println("4 Fail");
+    return;
+  }
+
+  // Write data to the block
+  // Serial.print(F("Writing data into block ")); Serial.print(g_buffer_rx[1]);
+  // Serial.println(F(" ..."));
+  // dump_byte_array(&g_buffer_rx[2], 16); Serial.println();
+  status = mfrc522.MIFARE_Write(g_buffer_rx[1], &g_buffer_rx[2], 16);
+  if (status != MFRC522::STATUS_OK)
+  {
+    // Serial.print(F("MIFARE_Write() failed: "));
+    // Serial.println(mfrc522.GetStatusCodeName(status));
+    Serial.println("4 Fail");
+  }
+  Serial.println("4 Done");
+
+  // Halt PICC
+  mfrc522.PICC_HaltA();
+  // Stop encryption on PCD
+  mfrc522.PCD_StopCrypto1();
+  
   g_cmd = Command::IDLE;
 }
 
@@ -197,11 +227,33 @@ void send_command_ack()
  */
 void loop()
 {
-  if (Serial.available())
+
+  byte len = Serial.available();
+  if (len > 0 && (g_buffer_rx_count + len) <= 20)
   {
-    g_cmd = (Command)Serial.read();
-    send_command_ack();
+    Serial.readBytes(&g_buffer_rx[g_buffer_rx_count], len);
+    g_buffer_rx_count += len;
+    // check if we received full command
+    if (g_buffer_rx[g_buffer_rx_count-1] == 0x0A && g_buffer_rx[g_buffer_rx_count-2] == 0x0D)
+    {
+      g_buffer_rx_cmd_received = true;
+      g_cmd = (Command)g_buffer_rx[0];
+      send_command_ack();
+      g_buffer_rx_count = 0;
+    }
+    else
+    {
+      g_buffer_rx_cmd_received = false;
+    }
   }
+
+  // return if command received patrially
+  if (!g_buffer_rx_cmd_received)
+  {
+    return;
+  }
+
+  
 
   if (g_cmd == Command::READ_UID)
   {
@@ -210,16 +262,7 @@ void loop()
 
   else if (g_cmd == Command::WRITE_UID)
   {
-    byte len = Serial.available();
-    if (g_uid_size > 0)
-    {
-      uid_write();
-    }
-    else if (len && len < 10)
-    {
-      g_uid_size = len;
-      Serial.readBytes(g_uid, len);
-    }
+    uid_write();
   }
 
   else if (g_cmd == Command::READ_DATA)
@@ -229,7 +272,6 @@ void loop()
 
   else if (g_cmd == Command::WRITE_DATA)
   {
-    send_command_ack();
     card_write();
   }
 
