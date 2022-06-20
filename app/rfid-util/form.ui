@@ -49,7 +49,7 @@
      </rect>
     </property>
    </widget>
-   <widget class="QPushButton" name="pushButton">
+   <widget class="QPushButton" name="btn_uid_read">
     <property name="enabled">
      <bool>false</bool>
     </property>
@@ -65,7 +65,7 @@
      <string>Read</string>
     </property>
    </widget>
-   <widget class="QPushButton" name="pushButton_2">
+   <widget class="QPushButton" name="btn_uid_write">
     <property name="enabled">
      <bool>false</bool>
     </property>
@@ -81,7 +81,7 @@
      <string>Write</string>
     </property>
    </widget>
-   <widget class="QListView" name="listView">
+   <widget class="QListView" name="lw_data">
     <property name="enabled">
      <bool>false</bool>
     </property>
@@ -93,8 +93,13 @@
       <height>331</height>
      </rect>
     </property>
+    <property name="font">
+     <font>
+      <family>Monospace</family>
+     </font>
+    </property>
    </widget>
-   <widget class="QPushButton" name="pushButton_3">
+   <widget class="QPushButton" name="btn_data_read">
     <property name="enabled">
      <bool>false</bool>
     </property>
@@ -110,7 +115,7 @@
      <string>Read data</string>
     </property>
    </widget>
-   <widget class="QPushButton" name="pushButton_4">
+   <widget class="QPushButton" name="btn_data_write">
     <property name="enabled">
      <bool>false</bool>
     </property>
