@@ -8,13 +8,16 @@
 MFRC522 mfrc522(SS_PIN, RST_PIN); // Create MFRC522 instance.
 
 
+#define BUF_MAX 52
 // buffer for outgoing data
 byte g_buffer_tx[20];
 
 // buffer for incomming command
-byte g_buffer_rx[20];
+byte g_buffer_rx[BUF_MAX];
 // count of bytes already received
 byte g_buffer_rx_count = 0;
+// len of last received command
+byte g_buffer_cmd_len = 0;
 // if cmd fully received?
 bool g_buffer_rx_cmd_received = false;
 
@@ -29,7 +32,8 @@ enum Command
   READ_UID        = 0x31,   // '1'
   WRITE_UID       = 0x32,   // '2'
   READ_DATA       = 0x33,   // '3'
-  WRITE_DATA      = 0x34,   // '4'
+  READ_DATA_ALL   = 0x34,   // '4'
+  WRITE_DATA      = 0x35,   // '5'
   VERSION_CHECK   = 0x39    // '?'
 };
 
@@ -63,11 +67,20 @@ void dump_byte_array(byte *buffer, byte bufferSize)
  * @return true when the given key worked, false otherwise.
  */
 
-bool try_dump_with_key(MFRC522::MIFARE_Key *key)
+bool try_dump_with_key(MFRC522::MIFARE_Key *key, byte sector=-1)
 {
   bool result = false;
 
-  for (byte block = 0; block < 64; block++)
+  byte start = 0;
+  byte end = 64;
+
+  if (g_cmd == Command::READ_DATA)
+  {
+    start = sector * 4;
+    end = start + 3;
+  }
+
+  for (byte block = start; block < end; block++)
   {
 
     // Serial.println(F("Authenticating using key A..."));
@@ -89,7 +102,8 @@ bool try_dump_with_key(MFRC522::MIFARE_Key *key)
       // Successful read
       result = true;
       // Dump block data
-      Serial.printf("3 B%02d:", block);
+      Serial.print((char)g_cmd);
+      Serial.printf(" B%02d:", block);
       dump_byte_array(g_buffer_tx, 16);
       Serial.println();
     }
@@ -140,6 +154,35 @@ void uid_write()
 
 }
 
+void card_read()
+{
+  // Wait for new cards
+  if (!mfrc522.PICC_IsNewCardPresent())
+    return;
+
+  // Select one of the cards
+  if (!mfrc522.PICC_ReadCardSerial())
+    return;
+
+  // Show some details of the PICC (that is: the tag/card)
+  Serial.print("1 UID:");
+  dump_byte_array(mfrc522.uid.uidByte, mfrc522.uid.size);
+  Serial.print("1 Type: ");
+  Serial.println(mfrc522.PICC_GetTypeName(mfrc522.PICC_GetType(mfrc522.uid.sak)));
+
+  // Try dump with known default key
+  if (try_dump_with_key(&key, g_buffer_rx[1]))
+  {
+    Serial.println("3 Done");
+  }
+  else
+  {
+    Serial.println("3 Fail");
+  }
+
+  g_cmd = Command::IDLE;
+}
+
 void card_dump()
 {
   // Wait for new cards
@@ -159,11 +202,11 @@ void card_dump()
   // Try dump with known default key
   if (try_dump_with_key(&key))
   {
-    Serial.println("3 Done");
+    Serial.println("4 Done");
   }
   else
   {
-    Serial.println("3 Fail");
+    Serial.println("4 Fail");
   }
 
   g_cmd = Command::IDLE;
@@ -180,26 +223,27 @@ void card_write()
     return;
 
   MFRC522::StatusCode status;
+  byte blockno = g_buffer_rx[1];
+  byte *buf = &g_buffer_rx[2];
+  byte processed = 0;
+  // loop while processed bytes < g_buffer_cmd_len - SPECIAL_CHARS_COUNT
+  while (processed < g_buffer_cmd_len - 4){
+    status = mfrc522.PCD_Authenticate(MFRC522::PICC_CMD_MF_AUTH_KEY_A, blockno, &key, &(mfrc522.uid));
+    if (status != MFRC522::STATUS_OK)
+    {
+      Serial.println("4 Fail");
+      return;
+    }
 
-  status = mfrc522.PCD_Authenticate(MFRC522::PICC_CMD_MF_AUTH_KEY_A, g_buffer_rx[1], &key, &(mfrc522.uid));
-  if (status != MFRC522::STATUS_OK)
-  {
-    // Serial.print(F("PCD_Authenticate() failed: "));
-    // Serial.println(mfrc522.GetStatusCodeName(status));
-    Serial.println("4 Fail");
-    return;
-  }
-
-  // Write data to the block
-  // Serial.print(F("Writing data into block ")); Serial.print(g_buffer_rx[1]);
-  // Serial.println(F(" ..."));
-  // dump_byte_array(&g_buffer_rx[2], 16); Serial.println();
-  status = mfrc522.MIFARE_Write(g_buffer_rx[1], &g_buffer_rx[2], 16);
-  if (status != MFRC522::STATUS_OK)
-  {
-    // Serial.print(F("MIFARE_Write() failed: "));
-    // Serial.println(mfrc522.GetStatusCodeName(status));
-    Serial.println("4 Fail");
+    status = mfrc522.MIFARE_Write(blockno, buf, 16);
+    if (status != MFRC522::STATUS_OK)
+    {
+      Serial.println("4 Fail");
+      break;
+    }
+    processed += 16;
+    buf += 16;
+    blockno++;
   }
   Serial.println("4 Done");
 
@@ -229,7 +273,7 @@ void loop()
 {
 
   byte len = Serial.available();
-  if (len > 0 && (g_buffer_rx_count + len) <= 20)
+  if (len > 0 && (g_buffer_rx_count + len) <= BUF_MAX)
   {
     Serial.readBytes(&g_buffer_rx[g_buffer_rx_count], len);
     g_buffer_rx_count += len;
@@ -239,6 +283,7 @@ void loop()
       g_buffer_rx_cmd_received = true;
       g_cmd = (Command)g_buffer_rx[0];
       send_command_ack();
+      g_buffer_cmd_len = g_buffer_rx_count;
       g_buffer_rx_count = 0;
     }
     else
@@ -266,6 +311,11 @@ void loop()
   }
 
   else if (g_cmd == Command::READ_DATA)
+  {
+    card_read();
+  }
+
+  else if (g_cmd == Command::READ_DATA_ALL)
   {
     card_dump();
   }
