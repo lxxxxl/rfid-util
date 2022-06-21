@@ -19,8 +19,13 @@ class ReaderCommand(Enum):
     READ_UID        = ord('1')
     WRITE_UID       = ord('2')
     READ_DATA       = ord('3')
-    WRITE_DATA      = ord('4')
+    READ_DATA_ALL   = ord('4')
+    WRITE_DATA      = ord('5')
     VERSION_CHECK   = ord('9')
+
+    @classmethod
+    def has_value(cls, value):
+        return value in cls._value2member_map_ 
 
 class RfidUtil(QMainWindow):
     COMMAND_TRAILER = [0x0D, 0x0A]
@@ -29,7 +34,7 @@ class RfidUtil(QMainWindow):
         super(RfidUtil, self).__init__()
         self.ui = Ui_RfidUtil()
         self.ui.setupUi(self)
-        self.setFixedSize(511, 394)
+        self.setFixedSize(590, 350)
 
         # init serial port
         self.port_rx_data = ''
@@ -47,18 +52,33 @@ class RfidUtil(QMainWindow):
         for port in QSerialPortInfo.availablePorts():
             self.ports_to_check.append(port.systemLocation())
 
-        self.ui.statusbar.showMessage('Looking for reader...')
+        self.show_message('Looking for reader...')
         self.port_probe_step1()
 
         # button signals
         self.ui.btn_uid_read.clicked.connect(self.uid_read_click)
         self.ui.btn_uid_write.clicked.connect(self.uid_write_click)
+        self.ui.btn_data_raw_read.clicked.connect(self.data_read_raw_click)
+        self.ui.btn_data_raw_write.clicked.connect(self.data_write_raw_click)
         self.ui.btn_data_read.clicked.connect(self.data_read_click)
         self.ui.btn_data_write.clicked.connect(self.data_write_click)
+        self.ui.te_data.textChanged.connect(self.textedit_textChanged)
+
+        # sector numbers
+        for i in range(1,16):
+            self.ui.cb_sector.addItem(str(i), i)
 
         # data model for displaying RFID contents
         self.data_model = QStandardItemModel()
         self.ui.lw_data.setModel(self.data_model)
+
+    def show_message(self, text):
+        """
+        Show message in status bar
+        
+        :param text: text to show
+        """
+        self.ui.lbl_status.setText(text)
 
     def port_probe_step1(self):
         """Try to open serial port and send vesrion_check cmd"""
@@ -66,7 +86,7 @@ class RfidUtil(QMainWindow):
         self.port.close()
 
         if len(self.ports_to_check) == 0:
-            self.ui.statusbar.showMessage('Reader not found')
+            self.show_message('Reader not found')
             return
         # try to open port and send vesrion_check cmd
         self.port.setPortName(self.ports_to_check.pop())
@@ -86,7 +106,7 @@ class RfidUtil(QMainWindow):
         s = bytes(b).decode()
         if 'rfid-util' in s:
             self.port_opened = True
-            self.ui.statusbar.showMessage('Reader connected')
+            self.show_message('Reader connected')
             # disconnect probe signal and connect normal logic processing signal
             self.port.readyRead.disconnect(self.port_probe_step2)
             self.port.readyRead.connect(self.port_readyRead)
@@ -112,59 +132,72 @@ class RfidUtil(QMainWindow):
             if not self.port_rx_data.endswith('\n'):
                 continue
 
-            #print(self.port_rx_data)
+            print(self.port_rx_data)
+
+            # process common responses
+            cmd = ord(self.port_rx_data[0])
+            if ReaderCommand.has_value(cmd):
+                self.process_response_common(self.port_rx_data)
+
             if self.port_rx_data.startswith(chr(ReaderCommand.READ_UID.value)):
                 self.process_READ_UID_response(self.port_rx_data)
             elif self.port_rx_data.startswith(chr(ReaderCommand.WRITE_UID.value)):
                 self.process_WRITE_UID_response(self.port_rx_data)
             elif self.port_rx_data.startswith(chr(ReaderCommand.READ_DATA.value)):
                 self.process_READ_DATA_response(self.port_rx_data)
+            elif self.port_rx_data.startswith(chr(ReaderCommand.READ_DATA_ALL.value)):
+                self.process_READ_DATA_ALL_response(self.port_rx_data)
             elif self.port_rx_data.startswith(chr(ReaderCommand.WRITE_DATA.value)):
                 self.process_WRITE_DATA_response(self.port_rx_data)
 
             self.port_rx_data = ''
 
+    def process_response_common(self, data):
+        if 'OK' in data:
+            self.show_message('Waiting for card...')
+        elif 'Done' in data:
+            self.show_message('Operation Done')
+        elif 'Fail' in data:
+            self.show_message('Operaion Failure')
+
     def process_READ_UID_response(self, data):
         """Process response to READ_UID command"""
-        if 'OK' in data:
-            self.ui.statusbar.showMessage('Waiting for card...')
-        elif 'UID:' in data:
+        if 'UID:' in data:
             uid = data[data.find('UID:')+4:]
             self.ui.le_uid.setText(uid.replace('\r\n',''))
         elif 'Type:' in data:
-            self.ui.statusbar.showMessage(data[data.find('Type:'):])
+            self.show_message(data[data.find('Type:'):].replace('\r\n',''))
 
-    def process_READ_DATA_response(self, data):
-        """Process response to READ_UID command"""
-        if 'OK' in data:
-            self.ui.statusbar.showMessage('Waiting for card...')
-        elif 'Done' in data:
-            self.ui.statusbar.showMessage('Read Done')
-        elif 'Fail' in data:
-            self.ui.statusbar.showMessage('Read Fail')
-        elif '3 B' in data:
+    def process_READ_DATA_ALL_response(self, data):
+        """Process response to READ_DATA_ALL command"""
+        if '4 B' in data:
             data = data[data.find(': ')+2:]
             data = data.replace('\r\n','')
             item = QStandardItem(data)
             self.data_model.appendRow(item)
 
+    def process_READ_DATA_response(self, data):
+        """Process response to READ_DATA command"""
+        if '3 B' in data:
+            data = data[data.find(': ')+2:]
+            self.hex_data_buf += data.replace('\r\n','')
+        elif 'Done' in data:
+            try:
+                b = bytes.fromhex(self.hex_data_buf)
+                self.ui.te_data.setText(b.decode())
+            except UnicodeDecodeError:
+                self.show_message('Invalid string data')
+
+
     def process_WRITE_UID_response(self, data):
         """Process response to WRITE_UID command"""
-        if 'OK' in data:
-            self.ui.statusbar.showMessage('Waiting for card...')
-        elif 'Done' in data:
-            self.ui.statusbar.showMessage('Write Done')
-        elif 'Fail' in data:
-            self.ui.statusbar.showMessage('Write Fail')
+        # nothing to do special
+        pass
 
     def process_WRITE_DATA_response(self, data):
         """Process response to WRITE_DATA command"""
-        if 'OK' in data:
-            self.ui.statusbar.showMessage('Waiting for card...')
-        elif 'Done' in data:
-            self.ui.statusbar.showMessage('Write Done')
-        elif 'Fail' in data:
-            self.ui.statusbar.showMessage('Write Fail')
+        # nothing to do special
+        pass
 
     def uid_read_click(self):
         """Send READ_UID command"""
@@ -183,15 +216,15 @@ class RfidUtil(QMainWindow):
             uid.append(b)
         self.port.write(uid)
 
-    def data_read_click(self):
-        """Send READ_DATA command"""
+    def data_read_raw_click(self):
+        """Send READ_DATA_ALL command"""
         self.data_model.clear()
         if not self.port_opened:
             return
-        self.port.write(bytes([ReaderCommand.READ_DATA.value, *self.COMMAND_TRAILER]))
+        self.port.write(bytes([ReaderCommand.READ_DATA_ALL.value, *self.COMMAND_TRAILER]))
 
-    def data_write_click(self):
-        """Send WRITE_DATA command"""
+    def data_write_raw_click(self):
+        """Send WRITE_DATA command from raw view"""
         if not self.port_opened:
             return
         for i in self.ui.lw_data.selectedIndexes():
@@ -202,6 +235,36 @@ class RfidUtil(QMainWindow):
             for b in self.COMMAND_TRAILER:
                 cmd.append(b)
             self.port.write(cmd)
+
+    def data_read_click(self):
+        """Send READ_DATA command"""
+        self.hex_data_buf = ''
+        self.ui.te_data.clear()
+        if not self.port_opened:
+            return
+        self.port.write(bytes([ReaderCommand.READ_DATA.value, self.ui.cb_sector.currentData(),  *self.COMMAND_TRAILER]))
+
+    def data_write_click(self):
+        """Send WRITE_DATA command from data view"""
+        cmd = bytearray(self.ui.te_data.toPlainText().encode())
+        # append null-terminator and align string by size of block (16)
+        while len(cmd) % 16 != 0:
+            cmd.append(0)
+        blockno = self.ui.cb_sector.currentData() * 4
+        cmd.insert(0, blockno)
+        cmd.insert(0, ReaderCommand.WRITE_DATA.value)
+        for b in self.COMMAND_TRAILER:
+                cmd.append(b)
+        
+        self.port.write(cmd)
+
+    def textedit_textChanged(self):
+        """Limit max text length in te_data"""
+        if len(self.ui.te_data.toPlainText()) > 47:
+            self.ui.te_data.textCursor().deletePreviousChar()
+
+
+
 
 
 if __name__ == "__main__":
